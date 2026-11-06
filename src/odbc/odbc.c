@@ -1511,7 +1511,18 @@ static SQLRETURN _odbc_option_changed(struct _hstmt *stmt, const char *attr, con
 
 static SQLRETURN _odbc_attr_not_supported(struct _hstmt *stmt, SQLINTEGER attr)
 {
-	strcpy(stmt->sqlState, "HYC00"); // Optional feature not implemented
+	/* HY092 "Invalid attribute/option identifier" is what the specification
+	 * asks for when the attribute itself is unknown; HYC00 ("optional feature
+	 * not implemented") is for a *known* feature the driver cannot provide.
+	 *
+	 * The distinction matters in practice: clients probe the attributes they
+	 * would like and fall back on HY092. odbc-api, for instance, sets
+	 * SQL_ATTR_PARAMSET_SIZE on every execute() and deliberately ignores the
+	 * resulting HY092 when the value was 1 (the default) — see
+	 * pacman82/odbc-api#903. Answering HYC00 there fails the whole statement
+	 * instead of the one option, and MDB sources could not even be
+	 * introspected. */
+	strcpy(stmt->sqlState, "HY092"); // Invalid attribute/option identifier
 	LogStatementError(stmt, "Statement attribute %d is not supported", (int)attr);
 	return SQL_ERROR;
 }
@@ -1547,6 +1558,16 @@ SQLRETURN SQL_API SQLSetStmtAttr (
 		case SQL_ROWSET_SIZE:
 			if (value != 1)
 				return _odbc_option_changed(stmt, "SQL_ATTR_ROW_ARRAY_SIZE", "1");
+			break;
+		case SQL_ATTR_PARAMSET_SIZE:
+			/* The driver executes one parameter set per statement, so 1 is the
+			 * only value it can honour — and the only value a client needs:
+			 * odbc-api sets it to 1 before every execute(), even when there are
+			 * no parameters at all (pacman82/odbc-api#903). Accepting it keeps
+			 * that call site from failing; anything else is reported the usual
+			 * way, as a changed option value. */
+			if (value != 1)
+				return _odbc_option_changed(stmt, "SQL_ATTR_PARAMSET_SIZE", "1");
 			break;
 		case SQL_ATTR_QUERY_TIMEOUT:
 			if (value != 0)
